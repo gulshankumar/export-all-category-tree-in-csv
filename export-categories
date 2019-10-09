@@ -1,0 +1,103 @@
+#!/usr/bin/env php
+<?php
+/**
+ * @author Gulshan Maurya
+ */
+
+if (PHP_SAPI !== 'cli') {
+    echo 'bin/post_migration must be run as a CLI application';
+    exit(1);
+}
+
+use Magento\Framework\App\Bootstrap;
+
+require __DIR__ . '/../app/bootstrap.php';
+$bootstrap = Bootstrap::create(BP, $_SERVER);
+
+$objectManager = $bootstrap->getObjectManager();
+
+$state = $objectManager->get('Magento\Framework\App\State');
+$state->setAreaCode('frontend');
+
+$objectManager = \Magento\Framework\App\ObjectManager::getInstance(); // Instance of object manager
+$resource = $objectManager->get('Magento\Framework\App\ResourceConnection');
+$connection = $resource->getConnection();
+
+$catgTable = $resource->getTableName('catalog_category_entity');
+$catgIntTable = $resource->getTableName('catalog_category_entity_int');
+
+$categoryNameAttributeId = 41;//update your project ID
+$categoryIsActiveAttributeId = 42;//update your project ID
+$categoryIncludeInMenuAttributeId = 67;//update your project ID
+$categories = [];
+$selectcatg = "
+SELECT e.*, i.value as include_in_menu, name.value as name, active.value as active FROM `catalog_category_entity` as e
+LEFT JOIN `catalog_category_entity_int` as i ON (i.attribute_id = $categoryIncludeInMenuAttributeId AND i.entity_id = e.entity_id and i.store_id = 0)
+LEFT JOIN `catalog_category_entity_int` as active ON (active.attribute_id = $categoryIsActiveAttributeId AND active.entity_id = e.entity_id and active.store_id = 0)
+LEFT JOIN `catalog_category_entity_varchar` as name ON (name.attribute_id = $categoryNameAttributeId AND name.entity_id = e.entity_id and name.store_id = 0)
+WHERE e.path like '1/2%' AND e.level = 2
+";
+
+$select_result = $connection->fetchAll($selectcatg);
+
+$catagoryList = array();
+
+$exportDir = "pub/media/export/";
+$exportToFile = $exportDir . "Categories.csv";
+$row = ['Category', 'Level', 'Included In Menu', 'Status'];
+
+$file = fopen($exportToFile, "w");
+fputcsv($file, $row);
+fclose($file);
+
+function getSubCategories($id)
+{
+    $objectManager = \Magento\Framework\App\ObjectManager::getInstance(); // Instance of object manager
+    $resource = $objectManager->get('Magento\Framework\App\ResourceConnection');
+    $connection = $resource->getConnection();
+
+    $categoryNameAttributeId = 41;
+    $categoryIsActiveAttributeId = 42;
+    $categoryIncludeInMenuAttributeId = 67;
+    $selectcatg = "
+	SELECT e.*, i.value as include_in_menu, name.value as name, active.value as active FROM `catalog_category_entity` as e
+	LEFT JOIN `catalog_category_entity_int` as i ON (i.attribute_id = $categoryIncludeInMenuAttributeId AND i.entity_id = e.entity_id and i.store_id = 0)
+	LEFT JOIN `catalog_category_entity_int` as active ON (active.attribute_id = $categoryIsActiveAttributeId AND active.entity_id = e.entity_id and active.store_id = 0)
+	LEFT JOIN `catalog_category_entity_varchar` as name ON (name.attribute_id = $categoryNameAttributeId AND name.entity_id = e.entity_id and name.store_id = 0)
+	WHERE e.path like '1/2%' AND e.parent_id = $id
+	";
+
+    return $connection->fetchAll($selectcatg);
+}
+
+function traverseCategory($catId, $exportToFile)
+{
+    $objectManager = \Magento\Framework\App\ObjectManager::getInstance();
+    $category = $objectManager->create('Magento\Catalog\Model\Category')->load($catId);
+    $categoryName = $category->getName();
+
+    $hyphens = $category->getLevel() - 2;
+    for ($i = 0; $i < $hyphens; $i++) {
+        $categoryName = '----' . $categoryName;
+    }
+
+    $catagoryList = ['name' => $categoryName, 'level' => $category->getLevel(), 'include_in_menu' => $category->getIncludeInMenu() == 1? 'Yes': 'No', 'acive' => $category->getIsActive() == 1 ? 'Active' : 'Inactive'];
+    $file = fopen($exportToFile, "a+");
+    fputcsv($file, $catagoryList);
+    fclose($file);
+
+    if ($category->hasChildren()) {
+
+        $childCats = getSubCategories($category->getEntityId());
+        foreach ($childCats as $key => $child) {
+            traverseCategory($child['entity_id'], $exportToFile);
+        }
+    }
+    return $catagoryList;
+}
+
+foreach ($select_result as $key => $value) {
+    traverseCategory($value['entity_id'], $exportToFile);
+}
+
+echo "Check $exportToFile \n";
